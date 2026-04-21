@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: mediasnap
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: |
+      npm install &&
+      curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp &&
+      chmod a+rx /usr/local/bin/yt-dlp &&
+      yt-dlp --version
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: MAX_CONCURRENT
+        value: 5
