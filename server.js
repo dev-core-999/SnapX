@@ -98,7 +98,7 @@ app.use(helmet({
 // CORS — only allow specific domains
 const ALLOWED_ORIGINS = [
   'https://mediasnap-app.netlify.app',
-  'http://localhost:3000',
+  'https://mediasnap.onrender.com',
   'http://localhost:5500',
   // Add more allowed origins here if needed
 ];
