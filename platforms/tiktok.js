@@ -76,6 +76,25 @@ function formatDuration(sec) {
   return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
 
+// ── getBestFilesize — tries every place yt-dlp stores size ───────────────────
+function getBestFilesize(info) {
+  if (info.filesize)        return info.filesize;
+  if (info.filesize_approx) return info.filesize_approx;
+  if (Array.isArray(info.formats) && info.formats.length) {
+    const best = info.formats
+      .filter(f => f.ext === 'mp4' && f.vcodec !== 'none' && f.acodec !== 'none')
+      .pop() || info.formats[info.formats.length - 1];
+    if (best?.filesize)        return best.filesize;
+    if (best?.filesize_approx) return best.filesize_approx;
+    // merged stream: sum video + audio sizes
+    const sizes = info.formats
+      .map(f => f.filesize || f.filesize_approx || 0)
+      .filter(Boolean);
+    if (sizes.length) return sizes.reduce((a, b) => a + b, 0);
+  }
+  return null;
+}
+
 // ── getInfo — for /api/info (no file download) ────────────────────────────────
 async function getTikTokInfo(videoUrl) {
   const info = await ytdlpInfo(videoUrl);
@@ -97,7 +116,7 @@ async function getTikTokInfo(videoUrl) {
     platform  : 'TikTok',
     format    : 'MP4',
     directUrl,
-    filesize  : info.filesize ?? info.filesize_approx ?? null,
+    filesize  : getBestFilesize(info),
     _rawUrl   : videoUrl,
   };
 }
