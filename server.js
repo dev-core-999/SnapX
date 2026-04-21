@@ -17,6 +17,10 @@
 
 'use strict';
 
+// ── Install yt-dlp + ffmpeg before anything else ──────────────────────────────
+const { ensureDependencies } = require('./install');
+ensureDependencies().catch(e => console.warn('[MediaSnap] Dependency install warning:', e.message));
+
 const express      = require('express');
 const cors         = require('cors');
 const helmet       = require('helmet');
