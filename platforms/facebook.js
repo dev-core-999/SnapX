@@ -118,6 +118,7 @@ async function getFacebookInfo(videoUrl) {
     platform  : 'Facebook',
     format    : 'MP4',
     directUrl,
+    filesize  : info.filesize ?? info.filesize_approx ?? null,
     _rawUrl   : finalUrl,
   };
 }

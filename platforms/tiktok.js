@@ -97,6 +97,7 @@ async function getTikTokInfo(videoUrl) {
     platform  : 'TikTok',
     format    : 'MP4',
     directUrl,
+    filesize  : info.filesize ?? info.filesize_approx ?? null,
     _rawUrl   : videoUrl,
   };
 }

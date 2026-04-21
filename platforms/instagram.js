@@ -94,6 +94,7 @@ async function getInstagramInfo(videoUrl) {
     platform  : 'Instagram',
     format    : 'MP4',
     directUrl,
+    filesize  : info.filesize ?? info.filesize_approx ?? null,
     _rawUrl   : videoUrl,
   };
 }
