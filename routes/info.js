@@ -22,6 +22,14 @@ function detectPlatform(url) {
   return null;
 }
 
+function formatSize(bytes) {
+  if (!bytes || isNaN(bytes) || bytes <= 0) return null;
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
+  if (bytes >= 1048576)    return (bytes / 1048576).toFixed(2) + ' MB';
+  if (bytes >= 1024)       return (bytes / 1024).toFixed(2) + ' KB';
+  return bytes + ' B';
+}
+
 router.post('/api/info', async (req, res) => {
   const m   = req.app.locals.metrics;
   const url = (req.body?.url || '').trim();
@@ -54,7 +62,7 @@ router.post('/api/info', async (req, res) => {
       duration    : info.duration,
       thumbnail   : info.thumbnail,
       format      : info.format,
-      size        : 'Available after download',
+      size        : formatSize(info.filesize) ?? 'Available after download',
       // directUrl → browser video tag plays this directly (no server proxy needed)
       // Falls back to /api/preview if directUrl is null or fails
       directUrl   : info.directUrl || null,
