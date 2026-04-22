@@ -3,6 +3,8 @@
  * MediaSnap — routes/info.js
  * POST /api/info
  * Returns metadata + directUrl for video preview
+ * ✅ OPTIMIZED: yt-dlp result → global infoCache
+ *    /api/download ওই ক্যাশ ব্যবহার করে, দ্বিতীয়বার yt-dlp চালায় না
  * ============================================
  */
 
@@ -32,6 +34,7 @@ function formatSize(bytes) {
 
 router.post('/api/info', async (req, res) => {
   const m   = req.app.locals.metrics;
+  const cache = req.app.locals.infoCache;
   const url = (req.body?.url || '').trim();
 
   if (!url) return res.status(400).json({ success: false, error: 'URL is required.' });
@@ -52,6 +55,9 @@ router.post('/api/info', async (req, res) => {
     if (platform === 'instagram') info = await getInstagramInfo(url);
     if (platform === 'facebook')  info = await getFacebookInfo(url);
 
+    // ✅ yt-dlp result ক্যাশ করো — /api/download এ আর info call লাগবে না
+    cache.set(url, info);
+
     m.requests.success++;
 
     return res.json({
@@ -63,8 +69,6 @@ router.post('/api/info', async (req, res) => {
       thumbnail   : info.thumbnail,
       format      : info.format,
       size        : formatSize(info.filesize) ?? 'Available after download',
-      // directUrl → browser video tag plays this directly (no server proxy needed)
-      // Falls back to /api/preview if directUrl is null or fails
       directUrl   : info.directUrl || null,
       previewUrl  : `/api/preview?url=${encodeURIComponent(url)}`,
       downloadUrl : `/api/download?url=${encodeURIComponent(url)}`,
