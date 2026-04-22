@@ -1,6 +1,10 @@
 /**
  * ============================================
  * MediaSnap — platforms/instagram.js  (yt-dlp only)
+ *
+ * ✅ OPTIMIZED:
+ *   downloadInstagram(url, cachedInfo) — cachedInfo থাকলে
+ *   ytdlpInfo() আর call হয় না। শুধু download চলে।
  * ============================================
  */
 
@@ -116,8 +120,27 @@ async function getInstagramInfo(videoUrl) {
   };
 }
 
-async function downloadInstagram(videoUrl) {
-  const [infoData, filePath] = await Promise.all([ytdlpInfo(videoUrl), ytdlpDownload(videoUrl)]);
+// ✅ cachedInfo দেওয়া থাকলে ytdlpInfo() skip করা হয়
+async function downloadInstagram(videoUrl, cachedInfo = null) {
+  if (cachedInfo) {
+    // ✅ FAST PATH
+    const filePath = await ytdlpDownload(videoUrl);
+    const stat = fs.statSync(filePath);
+    return {
+      filePath,
+      title    : cachedInfo.title    || 'Instagram Video',
+      uploader : cachedInfo.uploader || '',
+      size     : formatSize(stat.size),
+      duration : cachedInfo.duration || 'Unknown',
+      platform : 'Instagram',
+    };
+  }
+
+  // FALLBACK
+  const [infoData, filePath] = await Promise.all([
+    ytdlpInfo(videoUrl),
+    ytdlpDownload(videoUrl),
+  ]);
   const stat = fs.statSync(filePath);
   return {
     filePath,

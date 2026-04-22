@@ -1,6 +1,12 @@
 /**
  * ============================================
  * MediaSnap — platforms/tiktok.js  (yt-dlp only)
+ *
+ * ✅ OPTIMIZED:
+ *   downloadTikTok(url, cachedInfo) — cachedInfo থাকলে
+ *   ytdlpInfo() আর call হয় না। শুধু download চলে।
+ *   আগে: info + download = দুটো yt-dlp process
+ *   এখন: শুধু download = একটা yt-dlp process
  * ============================================
  */
 
@@ -76,7 +82,6 @@ function formatDuration(sec) {
   return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
 
-// ── getBestFilesize — tries every place yt-dlp stores size ───────────────────
 function getBestFilesize(info) {
   if (info.filesize)        return info.filesize;
   if (info.filesize_approx) return info.filesize_approx;
@@ -86,7 +91,6 @@ function getBestFilesize(info) {
       .pop() || info.formats[info.formats.length - 1];
     if (best?.filesize)        return best.filesize;
     if (best?.filesize_approx) return best.filesize_approx;
-    // merged stream: sum video + audio sizes
     const sizes = info.formats
       .map(f => f.filesize || f.filesize_approx || 0)
       .filter(Boolean);
@@ -95,13 +99,11 @@ function getBestFilesize(info) {
   return null;
 }
 
-// ── getInfo — for /api/info (no file download) ────────────────────────────────
+// ── getTikTokInfo — for /api/info (no file download) ─────────────────────────
 async function getTikTokInfo(videoUrl) {
   const info = await ytdlpInfo(videoUrl);
-  // Get best direct URL for browser video player
   let directUrl = null;
   if (info.formats && info.formats.length) {
-    // prefer mp4 with both video+audio
     const best = info.formats.filter(f => f.ext === 'mp4' && f.vcodec !== 'none' && f.acodec !== 'none').pop()
               || info.formats[info.formats.length - 1];
     directUrl = best?.url || null;
@@ -121,12 +123,34 @@ async function getTikTokInfo(videoUrl) {
   };
 }
 
-// ── downloadTikTok — for /api/download (temp file) ───────────────────────────
-async function downloadTikTok(videoUrl) {
-  const [infoData, filePath] = await Promise.all([ytdlpInfo(videoUrl), ytdlpDownload(videoUrl)]);
-  const stat = fs.statSync(filePath);
+// ── downloadTikTok — for /api/download ───────────────────────────────────────
+// ✅ cachedInfo দেওয়া থাকলে ytdlpInfo() skip করা হয়
+// ✅ cachedInfo না থাকলে (cache miss) আগের মতো দুটো parallel চলে
+async function downloadTikTok(videoUrl, cachedInfo = null) {
+  let filePath;
+
+  if (cachedInfo) {
+    // ✅ FAST PATH: শুধু download, info skip
+    filePath = await ytdlpDownload(videoUrl);
+    const stat = fs.statSync(filePath);
+    return {
+      filePath,
+      title    : cachedInfo.title    || 'TikTok Video',
+      uploader : cachedInfo.uploader || '',
+      size     : formatSize(stat.size),
+      duration : cachedInfo.duration || 'Unknown',
+      platform : 'TikTok',
+    };
+  }
+
+  // FALLBACK: cache miss — আগের মতো parallel চালাও
+  const [infoData, downloadedPath] = await Promise.all([
+    ytdlpInfo(videoUrl),
+    ytdlpDownload(videoUrl),
+  ]);
+  const stat = fs.statSync(downloadedPath);
   return {
-    filePath,
+    filePath : downloadedPath,
     title    : infoData.title    || 'TikTok Video',
     uploader : infoData.uploader || '',
     size     : formatSize(stat.size),

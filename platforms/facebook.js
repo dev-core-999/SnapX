@@ -1,6 +1,10 @@
 /**
  * ============================================
  * MediaSnap — platforms/facebook.js  (yt-dlp only)
+ *
+ * ✅ OPTIMIZED:
+ *   downloadFacebook(url, cachedInfo) — cachedInfo থাকলে
+ *   ytdlpInfo() আর call হয় না। শুধু download চলে।
  * ============================================
  */
 
@@ -16,13 +20,11 @@ const urlModule = require('url');
 
 const YTDLP_TIMEOUT  = 120_000;
 const SOCKET_TIMEOUT = '30';
-// Facebook: prefer HD
 const FORMAT_STR =
   'bestvideo[ext=mp4][height>=720]+bestaudio[ext=m4a]/' +
   'bestvideo[ext=mp4]+bestaudio[ext=m4a]/' +
   'best[ext=mp4]/best';
 
-// fb.watch redirect resolver
 function resolveRedirect(shortUrl) {
   return new Promise((resolve) => {
     try {
@@ -140,11 +142,35 @@ async function getFacebookInfo(videoUrl) {
   };
 }
 
-async function downloadFacebook(videoUrl) {
+// ✅ cachedInfo দেওয়া থাকলে ytdlpInfo() skip করা হয়
+async function downloadFacebook(videoUrl, cachedInfo = null) {
+  // fb.watch redirect — cachedInfo._rawUrl তে আগেই resolved URL থাকে
   let finalUrl = videoUrl;
-  if (/fb\.watch/i.test(videoUrl)) finalUrl = await resolveRedirect(videoUrl);
+  if (cachedInfo?._rawUrl) {
+    finalUrl = cachedInfo._rawUrl; // redirect already resolved
+  } else if (/fb\.watch/i.test(videoUrl)) {
+    finalUrl = await resolveRedirect(videoUrl);
+  }
 
-  const [infoData, filePath] = await Promise.all([ytdlpInfo(finalUrl), ytdlpDownload(finalUrl)]);
+  if (cachedInfo) {
+    // ✅ FAST PATH
+    const filePath = await ytdlpDownload(finalUrl);
+    const stat = fs.statSync(filePath);
+    return {
+      filePath,
+      title    : cachedInfo.title    || 'Facebook Video',
+      uploader : cachedInfo.uploader || '',
+      size     : formatSize(stat.size),
+      duration : cachedInfo.duration || 'Unknown',
+      platform : 'Facebook',
+    };
+  }
+
+  // FALLBACK
+  const [infoData, filePath] = await Promise.all([
+    ytdlpInfo(finalUrl),
+    ytdlpDownload(finalUrl),
+  ]);
   const stat = fs.statSync(filePath);
   return {
     filePath,
