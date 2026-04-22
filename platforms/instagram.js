@@ -2,9 +2,10 @@
  * ============================================
  * MediaSnap — platforms/instagram.js  (yt-dlp only)
  *
- * ✅ OPTIMIZED:
- *   downloadInstagram(url, cachedInfo) — cachedInfo থাকলে
- *   ytdlpInfo() আর call হয় না। শুধু download চলে।
+ * ✅ OPTIMIZED: cachedInfo থাকলে ytdlpInfo() skip
+ * ✅ FIXED: cookies file /tmp/ এ copy করে ব্যবহার করা হয়
+ *    কারণ Render এ /etc/secrets/ read-only,
+ *    yt-dlp সেখানে write করতে পারে না।
  * ============================================
  */
 
@@ -19,6 +20,39 @@ const YTDLP_TIMEOUT  = 120_000;
 const SOCKET_TIMEOUT = '30';
 const FORMAT_STR     = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
 
+// ── Cookies path fix ──────────────────────────────────────────────────────────
+// /etc/secrets/ read-only বলে yt-dlp crash করে।
+// তাই server start এ একবার /tmp/ এ copy করে রাখি।
+let COOKIES_PATH = null;
+
+function getCookiesPath() {
+  if (COOKIES_PATH) return COOKIES_PATH;
+
+  const secretPath = '/etc/secrets/cookies.txt';
+  const tmpPath    = path.join(os.tmpdir(), 'instagram_cookies.txt');
+
+  try {
+    if (fs.existsSync(secretPath)) {
+      fs.copyFileSync(secretPath, tmpPath);
+      COOKIES_PATH = tmpPath;
+      console.log('[Instagram] Cookies copied to /tmp ✓');
+    }
+  } catch (e) {
+    console.warn('[Instagram] Could not copy cookies:', e.message);
+  }
+
+  return COOKIES_PATH;
+}
+
+// Server start এ একবার copy করো
+getCookiesPath();
+
+function getCookiesArgs() {
+  const p = getCookiesPath();
+  return p ? ['--cookies', p] : [];
+}
+
+// ── yt-dlp info ───────────────────────────────────────────────────────────────
 function ytdlpInfo(videoUrl) {
   return new Promise((resolve, reject) => {
     const args = [
@@ -26,7 +60,7 @@ function ytdlpInfo(videoUrl) {
       '--no-warnings', '--quiet',
       '--socket-timeout', SOCKET_TIMEOUT,
       '--format', FORMAT_STR,
-      ...(process.env.INSTAGRAM_COOKIES ? ['--cookies', process.env.INSTAGRAM_COOKIES] : []),
+      ...getCookiesArgs(),
       videoUrl,
     ];
     const proc = execFile('yt-dlp', args,
@@ -41,6 +75,7 @@ function ytdlpInfo(videoUrl) {
   });
 }
 
+// ── yt-dlp download ───────────────────────────────────────────────────────────
 function ytdlpDownload(videoUrl) {
   return new Promise((resolve, reject) => {
     const outFile = path.join(os.tmpdir(), `instagram_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
@@ -51,7 +86,7 @@ function ytdlpDownload(videoUrl) {
       '--format', FORMAT_STR,
       '--merge-output-format', 'mp4',
       '--output', outFile,
-      ...(process.env.INSTAGRAM_COOKIES ? ['--cookies', process.env.INSTAGRAM_COOKIES] : []),
+      ...getCookiesArgs(),
       videoUrl,
     ];
     const proc = spawn('yt-dlp', args);
@@ -120,10 +155,9 @@ async function getInstagramInfo(videoUrl) {
   };
 }
 
-// ✅ cachedInfo দেওয়া থাকলে ytdlpInfo() skip করা হয়
+// ✅ cachedInfo থাকলে ytdlpInfo() skip
 async function downloadInstagram(videoUrl, cachedInfo = null) {
   if (cachedInfo) {
-    // ✅ FAST PATH
     const filePath = await ytdlpDownload(videoUrl);
     const stat = fs.statSync(filePath);
     return {
@@ -136,7 +170,6 @@ async function downloadInstagram(videoUrl, cachedInfo = null) {
     };
   }
 
-  // FALLBACK
   const [infoData, filePath] = await Promise.all([
     ytdlpInfo(videoUrl),
     ytdlpDownload(videoUrl),
