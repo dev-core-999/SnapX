@@ -2,9 +2,11 @@
  * ============================================
  * MediaSnap — routes/info.js
  * POST /api/info
- * Returns metadata + directUrl for video preview
- * ✅ OPTIMIZED: yt-dlp result → global infoCache
- *    /api/download ওই ক্যাশ ব্যবহার করে, দ্বিতীয়বার yt-dlp চালায় না
+ *
+ * ✅ OPTIMIZED v2:
+ *   - Metadata + video একসাথে download হয়
+ *   - filePath cache এ রাখা হয়
+ *   - /api/download এ cache hit হলে instant stream
  * ============================================
  */
 
@@ -13,9 +15,9 @@
 const express = require('express');
 const router  = express.Router();
 
-const { getTikTokInfo    } = require('../platforms/tiktok');
-const { getInstagramInfo } = require('../platforms/instagram');
-const { getFacebookInfo  } = require('../platforms/facebook');
+const { getTikTokInfo,     downloadTikTok    } = require('../platforms/tiktok');
+const { getInstagramInfo,  downloadInstagram } = require('../platforms/instagram');
+const { getFacebookInfo,   downloadFacebook  } = require('../platforms/facebook');
 
 function detectPlatform(url) {
   if (/tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com/i.test(url))  return 'tiktok';
@@ -33,48 +35,76 @@ function formatSize(bytes) {
 }
 
 router.post('/api/info', async (req, res) => {
-  const m   = req.app.locals.metrics;
+  const m     = req.app.locals.metrics;
   const cache = req.app.locals.infoCache;
-  const url = (req.body?.url || '').trim();
+  const url   = (req.body?.url || '').trim();
 
   if (!url) return res.status(400).json({ success: false, error: 'URL is required.' });
 
   const platform = detectPlatform(url);
   if (!platform) {
     return res.status(400).json({
-      success : false,
-      error   : 'Unsupported URL. Send a TikTok, Instagram, or Facebook link.',
+      success: false,
+      error  : 'Unsupported URL. Send a TikTok, Instagram, or Facebook link.',
     });
   }
 
+  if (m.concurrentDownloads >= m.maxConcurrent) {
+    return res.status(429).json({ success: false, error: 'Server busy. Please try again shortly.' });
+  }
+
   m.requests.total++;
+  m.concurrentDownloads++;
 
   try {
-    let info;
-    if (platform === 'tiktok')    info = await getTikTokInfo(url);
-    if (platform === 'instagram') info = await getInstagramInfo(url);
-    if (platform === 'facebook')  info = await getFacebookInfo(url);
+    // ✅ Metadata + video file একসাথে আনো (parallel)
+    let info, downloadResult;
 
-    // ✅ yt-dlp result ক্যাশ করো — /api/download এ আর info call লাগবে না
-    cache.set(url, info);
+    if (platform === 'tiktok') {
+      [info, downloadResult] = await Promise.all([
+        getTikTokInfo(url),
+        downloadTikTok(url),
+      ]);
+    }
+    if (platform === 'instagram') {
+      [info, downloadResult] = await Promise.all([
+        getInstagramInfo(url),
+        downloadInstagram(url),
+      ]);
+    }
+    if (platform === 'facebook') {
+      [info, downloadResult] = await Promise.all([
+        getFacebookInfo(url),
+        downloadFacebook(url),
+      ]);
+    }
 
+    m.concurrentDownloads--;
     m.requests.success++;
 
+    // ✅ info + filePath একসাথে cache এ রাখো
+    cache.set(url, {
+      ...info,
+      filePath: downloadResult.filePath,
+      fileSize: downloadResult.size,
+    });
+
     return res.json({
-      success     : true,
-      platform    : info.platform,
-      title       : info.title,
-      uploader    : info.uploader,
-      duration    : info.duration,
-      thumbnail   : info.thumbnail,
-      format      : info.format,
-      size        : formatSize(info.filesize) ?? 'Available after download',
-      directUrl   : info.directUrl || null,
-      previewUrl  : `/api/preview?url=${encodeURIComponent(url)}`,
-      downloadUrl : `/api/download?url=${encodeURIComponent(url)}`,
+      success    : true,
+      platform   : info.platform,
+      title      : info.title,
+      uploader   : info.uploader,
+      duration   : info.duration,
+      thumbnail  : info.thumbnail,
+      format     : info.format,
+      size       : downloadResult.size || formatSize(info.filesize) || 'Available after download',
+      directUrl  : info.directUrl || null,
+      previewUrl : `/api/preview?url=${encodeURIComponent(url)}`,
+      downloadUrl: `/api/download?url=${encodeURIComponent(url)}`,
       url,
     });
   } catch (err) {
+    m.concurrentDownloads--;
     m.requests.failed++;
     console.error(`[/api/info] ${platform} error:`, err.message);
     return res.status(500).json({ success: false, error: err.message });
