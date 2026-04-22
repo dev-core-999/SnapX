@@ -2,13 +2,10 @@
  * ============================================
  * MediaSnap — routes/download.js
  * GET /api/download?url=<encoded>
- * Saves video to temp file, streams as attachment
- * → mobile browser saves directly to device
  *
- * ✅ OPTIMIZED:
- *   আগে: yt-dlp info() + yt-dlp download() — দুটো PARALLEL চলত
- *   এখন: cache থেকে info নাও, শুধু download() চালাও
- *   ফলে প্রতিটা download এ ~5–15 সেকেন্ড বাঁচে
+ * ✅ OPTIMIZED v2:
+ *   Cache HIT  → /api/info এ download হওয়া file সরাসরি stream — INSTANT
+ *   Cache MISS → নতুন করে yt-dlp download করে stream (fallback)
  * ============================================
  */
 
@@ -47,28 +44,57 @@ router.get('/api/download', async (req, res) => {
   const platform = detectPlatform(url);
   if (!platform) return res.status(400).json({ error: 'Unsupported URL' });
 
+  m.requests.total++;
+
+  // ✅ Cache HIT — /api/info এ download হওয়া file আছে
+  const cached = cache.get(url);
+  if (cached?.filePath && fs.existsSync(cached.filePath)) {
+    console.log(`[/api/download] INSTANT — serving cached file for: ${url.slice(0, 60)}...`);
+
+    const filename = safeFilename(cached.title, platform);
+    const stat     = fs.statSync(cached.filePath);
+    const fileSize = stat.size;
+
+    res.writeHead(200, {
+      'Content-Type'          : 'application/octet-stream',
+      'Content-Length'        : fileSize,
+      'Content-Disposition'   : `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'Cache-Control'         : 'no-cache',
+      'X-Content-Type-Options': 'nosniff',
+    });
+
+    const stream = fs.createReadStream(cached.filePath);
+    stream.pipe(res);
+
+    const cleanup = () => {
+      try { fs.unlinkSync(cached.filePath); } catch (_) {}
+      cache.clearFile(url); // cache এ filePath null করো
+    };
+    res.on('finish', () => { m.requests.success++; cleanup(); });
+    res.on('close',  cleanup);
+    stream.on('error', (err) => {
+      console.error('[/api/download] stream error:', err.message);
+      m.requests.failed++;
+      cleanup();
+    });
+
+    return;
+  }
+
+  // ✅ Cache MISS — নতুন করে download করো (fallback)
+  console.log(`[/api/download] FALLBACK — re-downloading: ${url.slice(0, 60)}...`);
+
   if (m.concurrentDownloads >= m.maxConcurrent) {
     return res.status(429).json({ error: 'Server busy. Please try again shortly.' });
   }
 
   m.concurrentDownloads++;
-  m.requests.total++;
-
-  // ✅ cache থেকে আগের info নাও (যদি থাকে)
-  const cachedInfo = cache.get(url);
-  if (cachedInfo) {
-    console.log(`[/api/download] Cache HIT — skipping yt-dlp info for: ${url.slice(0, 60)}...`);
-  } else {
-    console.log(`[/api/download] Cache MISS — downloading without cached info: ${url.slice(0, 60)}...`);
-  }
 
   let result;
   try {
-    // ✅ cachedInfo pass করো platform download function এ
-    //    cache hit হলে platform function আর info call করবে না
-    if (platform === 'tiktok')    result = await downloadTikTok(url, cachedInfo);
-    if (platform === 'instagram') result = await downloadInstagram(url, cachedInfo);
-    if (platform === 'facebook')  result = await downloadFacebook(url, cachedInfo);
+    if (platform === 'tiktok')    result = await downloadTikTok(url);
+    if (platform === 'instagram') result = await downloadInstagram(url);
+    if (platform === 'facebook')  result = await downloadFacebook(url);
   } catch (err) {
     m.concurrentDownloads--;
     m.requests.failed++;
@@ -80,9 +106,9 @@ router.get('/api/download', async (req, res) => {
   m.requests.success++;
 
   const { filePath, title } = result;
-  const filename  = safeFilename(title, platform);
-  const stat      = fs.statSync(filePath);
-  const fileSize  = stat.size;
+  const filename = safeFilename(title, platform);
+  const stat     = fs.statSync(filePath);
+  const fileSize = stat.size;
 
   res.writeHead(200, {
     'Content-Type'          : 'application/octet-stream',
