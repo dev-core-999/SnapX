@@ -160,7 +160,7 @@ app.use(helmet({
 const ALLOWED_ORIGINS = [
   'https://mediasnap-app.netlify.app',
   'https://mediasnap.onrender.com',
-  'https://quickapi-app.netlify.app',
+  '',
 ];
 
 app.use(cors({
