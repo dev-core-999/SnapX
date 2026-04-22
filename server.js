@@ -53,6 +53,56 @@ app.locals.metrics = {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
+// GLOBAL INFO CACHE
+// /api/info থেকে পাওয়া yt-dlp JSON result ক্যাশ করা হয়।
+// /api/download এ একই URL এলে আর yt-dlp info রান করতে হয় না।
+// TTL: 8 মিনিট (directUrl সাধারণত 10-15 মিনিট valid থাকে)
+// ══════════════════════════════════════════════════════════════════════════════
+const INFO_CACHE_TTL = 8 * 60 * 1000; // 8 minutes
+
+app.locals.infoCache = {
+  _store: new Map(),
+
+  set(url, data) {
+    this._store.set(url, { data, expires: Date.now() + INFO_CACHE_TTL });
+    console.log(`[InfoCache] SET → ${url.slice(0, 60)}...`);
+  },
+
+  get(url) {
+    const entry = this._store.get(url);
+    if (!entry) return null;
+    if (Date.now() > entry.expires) {
+      this._store.delete(url);
+      console.log(`[InfoCache] EXPIRED → ${url.slice(0, 60)}...`);
+      return null;
+    }
+    console.log(`[InfoCache] HIT → ${url.slice(0, 60)}...`);
+    return entry.data;
+  },
+
+  delete(url) {
+    this._store.delete(url);
+  },
+
+  // প্রতি 5 মিনিটে expired entries clean করে
+  startCleanup() {
+    setInterval(() => {
+      const now = Date.now();
+      let cleaned = 0;
+      for (const [key, entry] of this._store.entries()) {
+        if (now > entry.expires) {
+          this._store.delete(key);
+          cleaned++;
+        }
+      }
+      if (cleaned > 0) console.log(`[InfoCache] Cleaned ${cleaned} expired entries`);
+    }, 5 * 60 * 1000);
+  },
+};
+
+app.locals.infoCache.startCleanup();
+
+// ══════════════════════════════════════════════════════════════════════════════
 // STARTUP CHECKS  — yt-dlp + ffmpeg
 // ══════════════════════════════════════════════════════════════════════════════
 function checkTool(cmd, args, cb) {
@@ -86,8 +136,6 @@ checkTool('ffmpeg', ['-version'], (ver) => {
 // MIDDLEWARE
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Security headers — helmet disabled for status page compatibility
-// Static HTML page uses inline scripts + external fonts/images
 app.use(helmet({
   contentSecurityPolicy      : false,
   crossOriginEmbedderPolicy  : false,
@@ -95,47 +143,41 @@ app.use(helmet({
   crossOriginOpenerPolicy    : false,
 }));
 
-// CORS — only allow specific domains
 const ALLOWED_ORIGINS = [
   'https://mediasnap-app.netlify.app',
-  'https://mediasnap.onrender.com',
+  'http://localhost:3000',
   'http://localhost:5500',
-  // Add more allowed origins here if needed
 ];
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (same-server / curl / Postman)
     if (!origin) return callback(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
     callback(new Error('CORS: Origin not allowed — ' + origin));
   },
-  methods : ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders : ['Content-Type', 'Authorization'],
-  credentials : false,
+  methods       : ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials   : false,
 }));
 
-// Body parsing
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
-// Rate limiter — 60 req/min per IP on API routes
 const apiLimiter = rateLimit({
-  windowMs        : 60 * 1000,
-  max             : 60,
-  standardHeaders : true,
-  legacyHeaders   : false,
-  message         : { error: 'Too many requests. Please slow down.' },
-  skip            : (req) => req.path === '/health',
+  windowMs       : 60 * 1000,
+  max            : 60,
+  standardHeaders: true,
+  legacyHeaders  : false,
+  message        : { error: 'Too many requests. Please slow down.' },
+  skip           : (req) => req.path === '/health',
 });
 app.use('/api', apiLimiter);
 
 // ══════════════════════════════════════════════════════════════════════════════
-// STATIC  — serve HTML status page from /public folder
+// STATIC
 // ══════════════════════════════════════════════════════════════════════════════
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Root → status page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -143,17 +185,15 @@ app.get('/', (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // ROUTES
 // ══════════════════════════════════════════════════════════════════════════════
-app.use(statusRouter);    // GET  /health, GET /api/status
-app.use(infoRouter);      // POST /api/info
-app.use(downloadRouter);  // GET  /api/download
-app.use(previewRouter);   // GET  /api/preview
+app.use(statusRouter);
+app.use(infoRouter);
+app.use(downloadRouter);
+app.use(previewRouter);
 
-// ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found.' });
 });
 
-// ── Global error handler ──────────────────────────────────────────────────────
 app.use((err, req, res, _next) => {
   console.error('[MediaSnap] Unhandled error:', err.message);
   res.status(500).json({ error: 'Internal server error.' });
@@ -171,9 +211,6 @@ const server = app.listen(PORT, () => {
   console.log(`[MediaSnap] Node.js: ${process.version}\n`);
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// GRACEFUL SHUTDOWN
-// ══════════════════════════════════════════════════════════════════════════════
 function shutdown(signal) {
   console.log(`\n[MediaSnap] ${signal} — shutting down gracefully...`);
   server.close(() => {
