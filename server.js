@@ -145,7 +145,7 @@ app.use(helmet({
 
 const ALLOWED_ORIGINS = [
   'https://mediasnap-app.netlify.app',
-  'http://localhost:3000',
+  'https://mediasnap.onrender.com',
   'http://localhost:5500',
 ];
 
