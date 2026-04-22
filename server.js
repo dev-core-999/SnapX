@@ -17,7 +17,6 @@
 
 'use strict';
 
-// ── Install yt-dlp + ffmpeg before anything else ──────────────────────────────
 const { ensureDependencies } = require('./install');
 ensureDependencies().catch(e => console.warn('[MediaSnap] Dependency install warning:', e.message));
 
@@ -26,21 +25,17 @@ const cors         = require('cors');
 const helmet       = require('helmet');
 const rateLimit    = require('express-rate-limit');
 const path         = require('path');
+const fs           = require('fs');
 const { execFile } = require('child_process');
 
-// ── Route files ───────────────────────────────────────────────────────────────
 const statusRouter   = require('./routes/status');
 const infoRouter     = require('./routes/info');
 const downloadRouter = require('./routes/download');
 const previewRouter  = require('./routes/preview');
 
-// ── App ───────────────────────────────────────────────────────────────────────
 const app  = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-// ══════════════════════════════════════════════════════════════════════════════
-// GLOBAL METRICS  (shared via app.locals — all routes read/write this)
-// ══════════════════════════════════════════════════════════════════════════════
 app.locals.metrics = {
   startedAt           : new Date().toISOString(),
   requests            : { total: 0, success: 0, failed: 0 },
@@ -53,18 +48,23 @@ app.locals.metrics = {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GLOBAL INFO CACHE
-// /api/info থেকে পাওয়া yt-dlp JSON result ক্যাশ করা হয়।
-// /api/download এ একই URL এলে আর yt-dlp info রান করতে হয় না।
-// TTL: 8 মিনিট (directUrl সাধারণত 10-15 মিনিট valid থাকে)
+// GLOBAL INFO + FILE CACHE
+// /api/info তে metadata + downloaded file path ক্যাশ হয়।
+// /api/download এ cache hit হলে আর yt-dlp চালাতে হয় না — instant download।
+// TTL: 10 মিনিট। এরপর temp file auto delete হয়।
 // ══════════════════════════════════════════════════════════════════════════════
-const INFO_CACHE_TTL = 8 * 60 * 1000; // 8 minutes
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
 app.locals.infoCache = {
   _store: new Map(),
 
   set(url, data) {
-    this._store.set(url, { data, expires: Date.now() + INFO_CACHE_TTL });
+    // আগের entry থাকলে পুরনো file delete করো
+    const existing = this._store.get(url);
+    if (existing?.filePath) {
+      try { fs.unlinkSync(existing.filePath); } catch (_) {}
+    }
+    this._store.set(url, { data, expires: Date.now() + CACHE_TTL });
     console.log(`[InfoCache] SET → ${url.slice(0, 60)}...`);
   },
 
@@ -72,6 +72,10 @@ app.locals.infoCache = {
     const entry = this._store.get(url);
     if (!entry) return null;
     if (Date.now() > entry.expires) {
+      // Expired — temp file delete করো
+      if (entry.data?.filePath) {
+        try { fs.unlinkSync(entry.data.filePath); } catch (_) {}
+      }
       this._store.delete(url);
       console.log(`[InfoCache] EXPIRED → ${url.slice(0, 60)}...`);
       return null;
@@ -80,17 +84,32 @@ app.locals.infoCache = {
     return entry.data;
   },
 
+  // Download হয়ে গেলে filePath null করো (file already streamed/deleted)
+  clearFile(url) {
+    const entry = this._store.get(url);
+    if (entry?.data) {
+      entry.data.filePath = null;
+    }
+  },
+
   delete(url) {
+    const entry = this._store.get(url);
+    if (entry?.data?.filePath) {
+      try { fs.unlinkSync(entry.data.filePath); } catch (_) {}
+    }
     this._store.delete(url);
   },
 
-  // প্রতি 5 মিনিটে expired entries clean করে
+  // প্রতি 5 মিনিটে expired entries + files clean করে
   startCleanup() {
     setInterval(() => {
       const now = Date.now();
       let cleaned = 0;
       for (const [key, entry] of this._store.entries()) {
         if (now > entry.expires) {
+          if (entry.data?.filePath) {
+            try { fs.unlinkSync(entry.data.filePath); } catch (_) {}
+          }
           this._store.delete(key);
           cleaned++;
         }
@@ -102,9 +121,7 @@ app.locals.infoCache = {
 
 app.locals.infoCache.startCleanup();
 
-// ══════════════════════════════════════════════════════════════════════════════
-// STARTUP CHECKS  — yt-dlp + ffmpeg
-// ══════════════════════════════════════════════════════════════════════════════
+// ── Startup checks ────────────────────────────────────────────────────────────
 function checkTool(cmd, args, cb) {
   execFile(cmd, args, { timeout: 10000 }, (err, stdout) => {
     cb(err ? null : (stdout.trim().split('\n')[0] || 'found'));
@@ -117,7 +134,7 @@ checkTool('yt-dlp', ['--version'], (ver) => {
     app.locals.metrics.ytdlpStatus  = 'found';
     console.log(`[MediaSnap] yt-dlp  ✓  ${ver}`);
   } else {
-    app.locals.metrics.ytdlpStatus  = 'not found';
+    app.locals.metrics.ytdlpStatus = 'not found';
     console.warn('[MediaSnap] yt-dlp  ✗  NOT FOUND — downloads will fail!');
   }
 });
@@ -132,15 +149,12 @@ checkTool('ffmpeg', ['-version'], (ver) => {
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// MIDDLEWARE
-// ══════════════════════════════════════════════════════════════════════════════
-
+// ── Middleware ────────────────────────────────────────────────────────────────
 app.use(helmet({
-  contentSecurityPolicy      : false,
-  crossOriginEmbedderPolicy  : false,
-  crossOriginResourcePolicy  : false,
-  crossOriginOpenerPolicy    : false,
+  contentSecurityPolicy     : false,
+  crossOriginEmbedderPolicy : false,
+  crossOriginResourcePolicy : false,
+  crossOriginOpenerPolicy   : false,
 }));
 
 const ALLOWED_ORIGINS = [
@@ -155,9 +169,9 @@ app.use(cors({
     if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
     callback(new Error('CORS: Origin not allowed — ' + origin));
   },
-  methods       : ['GET', 'POST', 'OPTIONS'],
+  methods      : ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials   : false,
+  credentials  : false,
 }));
 
 app.use(express.json({ limit: '1mb' }));
@@ -173,18 +187,12 @@ const apiLimiter = rateLimit({
 });
 app.use('/api', apiLimiter);
 
-// ══════════════════════════════════════════════════════════════════════════════
-// STATIC
-// ══════════════════════════════════════════════════════════════════════════════
 app.use(express.static(path.join(__dirname, 'public')));
-
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ROUTES
-// ══════════════════════════════════════════════════════════════════════════════
+// ── Routes ────────────────────────────────────────────────────────────────────
 app.use(statusRouter);
 app.use(infoRouter);
 app.use(downloadRouter);
@@ -199,14 +207,12 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: 'Internal server error.' });
 });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// START SERVER
-// ══════════════════════════════════════════════════════════════════════════════
+// ── Start ─────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`\n╔══════════════════════════════════════════╗`);
   console.log(`║      MediaSnap API Server v1.0.0         ║`);
   console.log(`╚══════════════════════════════════════════╝`);
-  console.log(`[MediaSnap] Running  →  http://localhost:${PORT}`);
+  console.log(`[MediaSnap] Running  →  https://mediasnap.onrender.com`);
   console.log(`[MediaSnap] Max concurrent downloads: ${app.locals.metrics.maxConcurrent}`);
   console.log(`[MediaSnap] Node.js: ${process.version}\n`);
 });
