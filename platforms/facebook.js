@@ -21,8 +21,11 @@ const urlModule = require('url');
 const YTDLP_TIMEOUT  = 120_000;
 const SOCKET_TIMEOUT = '30';
 const FORMAT_STR =
-  'bestvideo[ext=mp4][height>=720]+bestaudio[ext=m4a]/' +
-  'bestvideo[ext=mp4]+bestaudio[ext=m4a]/' +
+  'bestvideo[ext=mp4][height>=1080]+bestaudio[ext=m4a]/' +
+  'bestvideo[ext=mp4][height>=720]+bestaudio[ext=m4a]/'  +
+  'bestvideo[ext=mp4][height>=480]+bestaudio[ext=m4a]/'  +
+  'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'               +
+  'bestvideo+bestaudio/'                                  +
   'best[ext=mp4]/best';
 
 // ── User-Agent pool ───────────────────────────────────────────────────────────
