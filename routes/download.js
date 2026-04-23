@@ -26,12 +26,11 @@ function detectPlatform(url) {
   return null;
 }
 
-function safeFilename(title, platform) {
-  const base = (title || platform || 'video')
-    .replace(/[^\w\s\-_.]/g, '')
-    .replace(/\s+/g, '_')
-    .slice(0, 80);
-  return `${base || platform}_MediaSnap.mp4`;
+function safeFilename(title, platform, uploader) {
+  const p = (platform || 'Video').replace(/[^\w]/g, '');
+  const u = (uploader || '').replace(/[^\w\s\-_.]/g, '').replace(/\s+/g, '_').slice(0, 50);
+  const base = u ? `${p}_${u}` : p;
+  return `${base}_MediaSnap.mp4`;
 }
 
 router.get('/api/download', async (req, res) => {
@@ -51,7 +50,7 @@ router.get('/api/download', async (req, res) => {
   if (cached?.filePath && fs.existsSync(cached.filePath)) {
     console.log(`[/api/download] INSTANT — serving cached file for: ${url.slice(0, 60)}...`);
 
-    const filename = safeFilename(cached.title, platform);
+    const filename = safeFilename(cached.title, platform, cached.uploader);
     const stat     = fs.statSync(cached.filePath);
     const fileSize = stat.size;
 
@@ -105,8 +104,8 @@ router.get('/api/download', async (req, res) => {
   m.concurrentDownloads--;
   m.requests.success++;
 
-  const { filePath, title } = result;
-  const filename = safeFilename(title, platform);
+  const { filePath, title, uploader } = result;
+  const filename = safeFilename(title, platform, uploader);
   const stat     = fs.statSync(filePath);
   const fileSize = stat.size;
 
