@@ -2,9 +2,9 @@
  * ============================================
  * MediaSnap — platforms/facebook.js  (yt-dlp only)
  *
- * ✅ OPTIMIZED:
- *   downloadFacebook(url, cachedInfo) — cachedInfo থাকলে
- *   ytdlpInfo() আর call হয় না। শুধু download চলে।
+ * ✅ OPTIMIZED: cachedInfo থাকলে ytdlpInfo() skip
+ * ✅ FIXED: User-Agent rotation added
+ * ✅ FIXED: Retry logic with backoff
  * ============================================
  */
 
@@ -25,13 +25,30 @@ const FORMAT_STR =
   'bestvideo[ext=mp4]+bestaudio[ext=m4a]/' +
   'best[ext=mp4]/best';
 
+// ── User-Agent pool ───────────────────────────────────────────────────────────
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
+];
+
+function randomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function resolveRedirect(shortUrl) {
   return new Promise((resolve) => {
     try {
       const parsed = new urlModule.URL(shortUrl);
       const lib    = parsed.protocol === 'https:' ? https : http;
       const req    = lib.request(
-        { hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'HEAD', headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 },
+        { hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'HEAD', headers: { 'User-Agent': randomUA() }, timeout: 10000 },
         (res) => resolve(res.headers.location || shortUrl)
       );
       req.on('error', () => resolve(shortUrl));
@@ -40,12 +57,15 @@ function resolveRedirect(shortUrl) {
   });
 }
 
-function ytdlpInfo(videoUrl) {
+function ytdlpInfoOnce(videoUrl, ua) {
   return new Promise((resolve, reject) => {
     const args = [
       '--dump-json', '--no-playlist', '--playlist-items', '1',
       '--no-warnings', '--quiet',
       '--socket-timeout', SOCKET_TIMEOUT,
+      '--user-agent', ua,
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       '--format', FORMAT_STR,
       videoUrl,
     ];
@@ -61,13 +81,33 @@ function ytdlpInfo(videoUrl) {
   });
 }
 
-function ytdlpDownload(videoUrl) {
+async function ytdlpInfo(videoUrl, retries = 3) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      console.log(`[Facebook] ytdlpInfo attempt ${i + 1}/${retries}`);
+      return await ytdlpInfoOnce(videoUrl, randomUA());
+    } catch (err) {
+      lastErr = err;
+      const isRetryable = /rate.limit|429|temporarily/i.test(err.message);
+      if (isRetryable && i < retries - 1) {
+        await sleep((i + 1) * 2000);
+      } else { break; }
+    }
+  }
+  throw lastErr;
+}
+
+function ytdlpDownloadOnce(videoUrl, ua) {
   return new Promise((resolve, reject) => {
     const outFile = path.join(os.tmpdir(), `facebook_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
     const args = [
       '--no-playlist', '--playlist-items', '1',
       '--no-warnings', '--quiet',
       '--socket-timeout', SOCKET_TIMEOUT,
+      '--user-agent', ua,
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       '--format', FORMAT_STR,
       '--merge-output-format', 'mp4',
       '--output', outFile,
@@ -85,6 +125,23 @@ function ytdlpDownload(videoUrl) {
     });
     proc.on('error', (e) => { clearTimeout(killer); reject(e); });
   });
+}
+
+async function ytdlpDownload(videoUrl, retries = 3) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      console.log(`[Facebook] ytdlpDownload attempt ${i + 1}/${retries}`);
+      return await ytdlpDownloadOnce(videoUrl, randomUA());
+    } catch (err) {
+      lastErr = err;
+      const isRetryable = /rate.limit|429|temporarily/i.test(err.message);
+      if (isRetryable && i < retries - 1) {
+        await sleep((i + 1) * 2000);
+      } else { break; }
+    }
+  }
+  throw lastErr;
 }
 
 function formatSize(bytes) {
@@ -144,16 +201,14 @@ async function getFacebookInfo(videoUrl) {
 
 // ✅ cachedInfo দেওয়া থাকলে ytdlpInfo() skip করা হয়
 async function downloadFacebook(videoUrl, cachedInfo = null) {
-  // fb.watch redirect — cachedInfo._rawUrl তে আগেই resolved URL থাকে
   let finalUrl = videoUrl;
   if (cachedInfo?._rawUrl) {
-    finalUrl = cachedInfo._rawUrl; // redirect already resolved
+    finalUrl = cachedInfo._rawUrl;
   } else if (/fb\.watch/i.test(videoUrl)) {
     finalUrl = await resolveRedirect(videoUrl);
   }
 
   if (cachedInfo) {
-    // ✅ FAST PATH
     const filePath = await ytdlpDownload(finalUrl);
     const stat = fs.statSync(filePath);
     return {
@@ -166,7 +221,6 @@ async function downloadFacebook(videoUrl, cachedInfo = null) {
     };
   }
 
-  // FALLBACK
   const [infoData, filePath] = await Promise.all([
     ytdlpInfo(finalUrl),
     ytdlpDownload(finalUrl),

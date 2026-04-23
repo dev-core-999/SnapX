@@ -2,11 +2,9 @@
  * ============================================
  * MediaSnap — platforms/tiktok.js  (yt-dlp only)
  *
- * ✅ OPTIMIZED:
- *   downloadTikTok(url, cachedInfo) — cachedInfo থাকলে
- *   ytdlpInfo() আর call হয় না। শুধু download চলে।
- *   আগে: info + download = দুটো yt-dlp process
- *   এখন: শুধু download = একটা yt-dlp process
+ * ✅ OPTIMIZED: cachedInfo থাকলে ytdlpInfo() skip
+ * ✅ FIXED: User-Agent rotation added
+ * ✅ FIXED: Retry logic with backoff
  * ============================================
  */
 
@@ -21,13 +19,33 @@ const YTDLP_TIMEOUT  = 120_000;
 const SOCKET_TIMEOUT = '30';
 const FORMAT_STR     = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
 
-// ── yt-dlp info (metadata + direct stream URL) ────────────────────────────────
-function ytdlpInfo(videoUrl) {
+// ── User-Agent pool ───────────────────────────────────────────────────────────
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
+];
+
+function randomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ── yt-dlp info (single attempt) ─────────────────────────────────────────────
+function ytdlpInfoOnce(videoUrl, ua) {
   return new Promise((resolve, reject) => {
     const args = [
       '--dump-json', '--no-playlist', '--playlist-items', '1',
       '--no-warnings', '--quiet',
       '--socket-timeout', SOCKET_TIMEOUT,
+      '--user-agent', ua,
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       '--format', FORMAT_STR,
       videoUrl,
     ];
@@ -43,14 +61,35 @@ function ytdlpInfo(videoUrl) {
   });
 }
 
-// ── yt-dlp download (save to temp file) ──────────────────────────────────────
-function ytdlpDownload(videoUrl) {
+// ── yt-dlp info with retry ────────────────────────────────────────────────────
+async function ytdlpInfo(videoUrl, retries = 3) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      console.log(`[TikTok] ytdlpInfo attempt ${i + 1}/${retries}`);
+      return await ytdlpInfoOnce(videoUrl, randomUA());
+    } catch (err) {
+      lastErr = err;
+      const isRetryable = /rate.limit|429|temporarily/i.test(err.message);
+      if (isRetryable && i < retries - 1) {
+        await sleep((i + 1) * 2000);
+      } else { break; }
+    }
+  }
+  throw lastErr;
+}
+
+// ── yt-dlp download (single attempt) ─────────────────────────────────────────
+function ytdlpDownloadOnce(videoUrl, ua) {
   return new Promise((resolve, reject) => {
     const outFile = path.join(os.tmpdir(), `tiktok_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
     const args = [
       '--no-playlist', '--playlist-items', '1',
       '--no-warnings', '--quiet',
       '--socket-timeout', SOCKET_TIMEOUT,
+      '--user-agent', ua,
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       '--format', FORMAT_STR,
       '--merge-output-format', 'mp4',
       '--output', outFile,
@@ -68,6 +107,24 @@ function ytdlpDownload(videoUrl) {
     });
     proc.on('error', (e) => { clearTimeout(killer); reject(e); });
   });
+}
+
+// ── yt-dlp download with retry ────────────────────────────────────────────────
+async function ytdlpDownload(videoUrl, retries = 3) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      console.log(`[TikTok] ytdlpDownload attempt ${i + 1}/${retries}`);
+      return await ytdlpDownloadOnce(videoUrl, randomUA());
+    } catch (err) {
+      lastErr = err;
+      const isRetryable = /rate.limit|429|temporarily/i.test(err.message);
+      if (isRetryable && i < retries - 1) {
+        await sleep((i + 1) * 2000);
+      } else { break; }
+    }
+  }
+  throw lastErr;
 }
 
 function formatSize(bytes) {
@@ -99,7 +156,6 @@ function getBestFilesize(info) {
   return null;
 }
 
-// ── getTikTokInfo — for /api/info (no file download) ─────────────────────────
 async function getTikTokInfo(videoUrl) {
   const info = await ytdlpInfo(videoUrl);
   let directUrl = null;
@@ -123,15 +179,10 @@ async function getTikTokInfo(videoUrl) {
   };
 }
 
-// ── downloadTikTok — for /api/download ───────────────────────────────────────
 // ✅ cachedInfo দেওয়া থাকলে ytdlpInfo() skip করা হয়
-// ✅ cachedInfo না থাকলে (cache miss) আগের মতো দুটো parallel চলে
 async function downloadTikTok(videoUrl, cachedInfo = null) {
-  let filePath;
-
   if (cachedInfo) {
-    // ✅ FAST PATH: শুধু download, info skip
-    filePath = await ytdlpDownload(videoUrl);
+    const filePath = await ytdlpDownload(videoUrl);
     const stat = fs.statSync(filePath);
     return {
       filePath,
@@ -143,7 +194,6 @@ async function downloadTikTok(videoUrl, cachedInfo = null) {
     };
   }
 
-  // FALLBACK: cache miss — আগের মতো parallel চালাও
   const [infoData, downloadedPath] = await Promise.all([
     ytdlpInfo(videoUrl),
     ytdlpDownload(videoUrl),

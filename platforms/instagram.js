@@ -4,8 +4,9 @@
  *
  * ✅ OPTIMIZED: cachedInfo থাকলে ytdlpInfo() skip
  * ✅ FIXED: cookies file /tmp/ এ copy করে ব্যবহার করা হয়
- *    কারণ Render এ /etc/secrets/ read-only,
- *    yt-dlp সেখানে write করতে পারে না।
+ * ✅ FIXED: User-Agent rotation (rate-limit bypass)
+ * ✅ FIXED: Retry logic with exponential backoff
+ * ✅ FIXED: Instagram-specific extractor args
  * ============================================
  */
 
@@ -20,9 +21,24 @@ const YTDLP_TIMEOUT  = 120_000;
 const SOCKET_TIMEOUT = '30';
 const FORMAT_STR     = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
 
+// ── User-Agent pool (rotate করা হয়) ──────────────────────────────────────────
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1',
+];
+
+function randomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // ── Cookies path fix ──────────────────────────────────────────────────────────
-// /etc/secrets/ read-only বলে yt-dlp crash করে।
-// তাই server start এ একবার /tmp/ এ copy করে রাখি।
 let COOKIES_PATH = null;
 
 function getCookiesPath() {
@@ -44,7 +60,6 @@ function getCookiesPath() {
   return COOKIES_PATH;
 }
 
-// Server start এ একবার copy করো
 getCookiesPath();
 
 function getCookiesArgs() {
@@ -52,13 +67,18 @@ function getCookiesArgs() {
   return p ? ['--cookies', p] : [];
 }
 
-// ── yt-dlp info ───────────────────────────────────────────────────────────────
-function ytdlpInfo(videoUrl) {
+// ── yt-dlp info (single attempt) ─────────────────────────────────────────────
+function ytdlpInfoOnce(videoUrl, ua) {
   return new Promise((resolve, reject) => {
     const args = [
       '--dump-json', '--no-playlist', '--playlist-items', '1',
       '--no-warnings', '--quiet',
       '--socket-timeout', SOCKET_TIMEOUT,
+      '--user-agent', ua,
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      '--extractor-args', 'instagram:api=0',
+      '--sleep-requests', '1',
       '--format', FORMAT_STR,
       ...getCookiesArgs(),
       videoUrl,
@@ -75,14 +95,42 @@ function ytdlpInfo(videoUrl) {
   });
 }
 
-// ── yt-dlp download ───────────────────────────────────────────────────────────
-function ytdlpDownload(videoUrl) {
+// ── yt-dlp info with retry ────────────────────────────────────────────────────
+async function ytdlpInfo(videoUrl, retries = 3) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      const ua = randomUA();
+      console.log(`[Instagram] ytdlpInfo attempt ${i + 1}/${retries}`);
+      return await ytdlpInfoOnce(videoUrl, ua);
+    } catch (err) {
+      lastErr = err;
+      const isRateLimit = /rate.limit|login required|not available|429/i.test(err.message);
+      if (isRateLimit && i < retries - 1) {
+        const delay = (i + 1) * 3000;
+        console.warn(`[Instagram] Rate-limited, retrying in ${delay}ms...`);
+        await sleep(delay);
+      } else {
+        break;
+      }
+    }
+  }
+  throw lastErr;
+}
+
+// ── yt-dlp download (single attempt) ─────────────────────────────────────────
+function ytdlpDownloadOnce(videoUrl, ua) {
   return new Promise((resolve, reject) => {
     const outFile = path.join(os.tmpdir(), `instagram_${Date.now()}_${Math.random().toString(36).slice(2)}.mp4`);
     const args = [
       '--no-playlist', '--playlist-items', '1',
       '--no-warnings', '--quiet',
       '--socket-timeout', SOCKET_TIMEOUT,
+      '--user-agent', ua,
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      '--extractor-args', 'instagram:api=0',
+      '--sleep-requests', '1',
       '--format', FORMAT_STR,
       '--merge-output-format', 'mp4',
       '--output', outFile,
@@ -101,6 +149,29 @@ function ytdlpDownload(videoUrl) {
     });
     proc.on('error', (e) => { clearTimeout(killer); reject(e); });
   });
+}
+
+// ── yt-dlp download with retry ────────────────────────────────────────────────
+async function ytdlpDownload(videoUrl, retries = 3) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      const ua = randomUA();
+      console.log(`[Instagram] ytdlpDownload attempt ${i + 1}/${retries}`);
+      return await ytdlpDownloadOnce(videoUrl, ua);
+    } catch (err) {
+      lastErr = err;
+      const isRateLimit = /rate.limit|login required|not available|429/i.test(err.message);
+      if (isRateLimit && i < retries - 1) {
+        const delay = (i + 1) * 3000;
+        console.warn(`[Instagram] Rate-limited on download, retrying in ${delay}ms...`);
+        await sleep(delay);
+      } else {
+        break;
+      }
+    }
+  }
+  throw lastErr;
 }
 
 function formatSize(bytes) {
