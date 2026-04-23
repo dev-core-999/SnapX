@@ -186,8 +186,11 @@ async function getFacebookInfo(videoUrl) {
   }
   if (!directUrl) directUrl = info.url || null;
 
+  const fbCaption = info.description || info.fulltitle || info.title || 'Facebook Video';
+  const fbTitle   = fbCaption.replace(/\n+/g, ' ').trim().slice(0, 100) || 'Facebook Video';
+
   return {
-    title     : info.title    || 'Facebook Video',
+    title     : fbTitle,
     uploader  : info.uploader || info.creator || '',
     duration  : formatDuration(info.duration  || 0),
     thumbnail : info.thumbnail || '',
@@ -226,9 +229,11 @@ async function downloadFacebook(videoUrl, cachedInfo = null) {
     ytdlpDownload(finalUrl),
   ]);
   const stat = fs.statSync(filePath);
+  const fbDlCaption = infoData.description || infoData.fulltitle || infoData.title || 'Facebook Video';
+  const fbDlTitle   = fbDlCaption.replace(/\n+/g, ' ').trim().slice(0, 100) || 'Facebook Video';
   return {
     filePath,
-    title    : infoData.title    || 'Facebook Video',
+    title    : fbDlTitle,
     uploader : infoData.uploader || '',
     size     : formatSize(stat.size),
     duration : formatDuration(infoData.duration || 0),

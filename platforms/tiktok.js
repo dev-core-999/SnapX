@@ -166,8 +166,11 @@ async function getTikTokInfo(videoUrl) {
   }
   if (!directUrl) directUrl = info.url || null;
 
+  const ttCaption = info.description || info.fulltitle || info.title || 'TikTok Video';
+  const ttTitle   = ttCaption.replace(/\n+/g, ' ').trim().slice(0, 100) || 'TikTok Video';
+
   return {
-    title     : info.title    || 'TikTok Video',
+    title     : ttTitle,
     uploader  : info.uploader || info.creator || '',
     duration  : formatDuration(info.duration  || 0),
     thumbnail : info.thumbnail || '',
@@ -199,9 +202,11 @@ async function downloadTikTok(videoUrl, cachedInfo = null) {
     ytdlpDownload(videoUrl),
   ]);
   const stat = fs.statSync(downloadedPath);
+  const ttDlCaption = infoData.description || infoData.fulltitle || infoData.title || 'TikTok Video';
+  const ttDlTitle   = ttDlCaption.replace(/\n+/g, ' ').trim().slice(0, 100) || 'TikTok Video';
   return {
     filePath : downloadedPath,
-    title    : infoData.title    || 'TikTok Video',
+    title    : ttDlTitle,
     uploader : infoData.uploader || '',
     size     : formatSize(stat.size),
     duration : formatDuration(infoData.duration || 0),
