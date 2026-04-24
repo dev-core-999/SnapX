@@ -64,7 +64,8 @@ app.locals.infoCache = {
     if (existing?.filePath) {
       try { fs.unlinkSync(existing.filePath); } catch (_) {}
     }
-    this._store.set(url, { data, expires: Date.now() + CACHE_TTL });
+    // ✅ FIX: data কে flat store করো, nested 'data' key নয়
+    this._store.set(url, { ...data, expires: Date.now() + CACHE_TTL });
     console.log(`[InfoCache] SET → ${url.slice(0, 60)}...`);
   },
 
@@ -73,29 +74,31 @@ app.locals.infoCache = {
     if (!entry) return null;
     if (Date.now() > entry.expires) {
       // Expired — temp file delete করো
-      if (entry.data?.filePath) {
-        try { fs.unlinkSync(entry.data.filePath); } catch (_) {}
+      if (entry.filePath) {
+        try { fs.unlinkSync(entry.filePath); } catch (_) {}
       }
       this._store.delete(url);
       console.log(`[InfoCache] EXPIRED → ${url.slice(0, 60)}...`);
       return null;
     }
     console.log(`[InfoCache] HIT → ${url.slice(0, 60)}...`);
-    return entry.data;
+    // expires key বাদ দিয়ে return করো
+    const { expires: _e, ...rest } = entry;
+    return rest;
   },
 
   // Download হয়ে গেলে filePath null করো (file already streamed/deleted)
   clearFile(url) {
     const entry = this._store.get(url);
-    if (entry?.data) {
-      entry.data.filePath = null;
+    if (entry) {
+      entry.filePath = null;
     }
   },
 
   delete(url) {
     const entry = this._store.get(url);
-    if (entry?.data?.filePath) {
-      try { fs.unlinkSync(entry.data.filePath); } catch (_) {}
+    if (entry?.filePath) {
+      try { fs.unlinkSync(entry.filePath); } catch (_) {}
     }
     this._store.delete(url);
   },
@@ -107,8 +110,8 @@ app.locals.infoCache = {
       let cleaned = 0;
       for (const [key, entry] of this._store.entries()) {
         if (now > entry.expires) {
-          if (entry.data?.filePath) {
-            try { fs.unlinkSync(entry.data.filePath); } catch (_) {}
+          if (entry.filePath) {
+            try { fs.unlinkSync(entry.filePath); } catch (_) {}
           }
           this._store.delete(key);
           cleaned++;
