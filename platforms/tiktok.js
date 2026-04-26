@@ -20,9 +20,9 @@ const https     = require('https');
 const http      = require('http');
 const urlModule = require('url');
 
-const YTDLP_TIMEOUT    = 120_000;
+const YTDLP_TIMEOUT    = 30_000;
 const DOWNLOAD_TIMEOUT = 60_000;
-const SOCKET_TIMEOUT   = '30';
+const SOCKET_TIMEOUT   = '15';
 const FORMAT_STR       = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best';
 
 // ── User-Agent pool ───────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ function ytdlpInfoOnce(videoUrl, ua) {
 }
 
 // ── yt-dlp info with retry ────────────────────────────────────────────────────
-async function ytdlpInfo(videoUrl, retries = 3) {
+async function ytdlpInfo(videoUrl, retries = 1) {
   let lastErr;
   for (let i = 0; i < retries; i++) {
     try {
@@ -209,7 +209,7 @@ function ytdlpDownloadOnce(videoUrl, ua) {
 }
 
 // ── yt-dlp download with retry ────────────────────────────────────────────────
-async function ytdlpDownload(videoUrl, retries = 3) {
+async function ytdlpDownload(videoUrl, retries = 1) {
   let lastErr;
   for (let i = 0; i < retries; i++) {
     try {
