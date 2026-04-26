@@ -65,22 +65,15 @@ function downloadFile(url, dest) {
 
 // ── Install yt-dlp ────────────────────────────────────────────────────────────
 async function installYtDlp() {
-  if (isAvailable('yt-dlp')) {
-    try {
-      const v = execSync('yt-dlp --version', { encoding: 'utf8' }).trim();
-      log(`yt-dlp already available  ✓  (${v})`);
-      return;
-    } catch { /* fall through to install */ }
-  }
-
-  log('yt-dlp not found — downloading...');
+  // সবসময় latest version download করো — পুরনো version TikTok break করে
+  log('Downloading latest yt-dlp...');
   const url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
   await downloadFile(url, YTDLP);
   fs.chmodSync(YTDLP, 0o755);
 
   try {
     const v = execSync(`${YTDLP} --version`, { encoding: 'utf8' }).trim();
-    log(`yt-dlp installed  ✓  (${v})`);
+    log(`yt-dlp installed/updated  ✓  (${v})`);
   } catch (e) {
     warn(`yt-dlp installed but version check failed: ${e.message}`);
   }
