@@ -313,27 +313,69 @@ function getBestFilesize(info) {
 
 // ── Public: getTikTokInfo ─────────────────────────────────────────────────────
 async function getTikTokInfo(videoUrl) {
-  const info = await ytdlpInfo(videoUrl);
-  let directUrl = null;
-  if (info.formats && info.formats.length) {
-    const best = info.formats.filter(f => f.ext === 'mp4' && f.vcodec !== 'none' && f.acodec !== 'none').pop()
-              || info.formats[info.formats.length - 1];
-    directUrl = best?.url || null;
+
+  // ── Primary: yt-dlp ──────────────────────────────────────────────────────
+  try {
+    const info = await ytdlpInfo(videoUrl);
+    let directUrl = null;
+    if (info.formats && info.formats.length) {
+      const best = info.formats.filter(f => f.ext === 'mp4' && f.vcodec !== 'none' && f.acodec !== 'none').pop()
+                || info.formats[info.formats.length - 1];
+      directUrl = best?.url || null;
+    }
+    if (!directUrl) directUrl = info.url || null;
+    const ttCaption = info.description || info.fulltitle || info.title || 'TikTok Video';
+    const ttTitle   = ttCaption.replace(/\n+/g, ' ').trim().slice(0, 100) || 'TikTok Video';
+    return {
+      title     : ttTitle,
+      uploader  : info.uploader || info.creator || '',
+      duration  : formatDuration(info.duration  || 0),
+      thumbnail : info.thumbnail || '',
+      platform  : 'TikTok',
+      format    : 'MP4',
+      directUrl,
+      filesize  : getBestFilesize(info),
+      _rawUrl   : videoUrl,
+    };
+  } catch (err) {
+    console.warn('[TikTok] yt-dlp info failed, trying tikwm:', err.message);
   }
-  if (!directUrl) directUrl = info.url || null;
 
-  const ttCaption = info.description || info.fulltitle || info.title || 'TikTok Video';
-  const ttTitle   = ttCaption.replace(/\n+/g, ' ').trim().slice(0, 100) || 'TikTok Video';
+  // ── Fallback: tikwm.com (info only) ──────────────────────────────────────
+  try {
+    const raw    = await fetchPost(
+      'https://www.tikwm.com/api/',
+      `url=${encodeURIComponent(videoUrl)}&count=12&cursor=0&web=1&hd=1`,
+      { Referer: 'https://www.tikwm.com/', Origin: 'https://www.tikwm.com' }
+    );
+    const parsed = JSON.parse(raw);
+    if (parsed?.code !== 0 || !parsed?.data) throw new Error('tikwm: no data');
+    const data = parsed.data;
+    return {
+      title     : (data.title || 'TikTok Video').slice(0, 100),
+      uploader  : data.author?.nickname || '',
+      duration  : formatDuration(data.duration || 0),
+      thumbnail : data.cover || '',
+      platform  : 'TikTok',
+      format    : 'MP4',
+      directUrl : data.hdplay || data.play || null,
+      filesize  : null,
+      _rawUrl   : videoUrl,
+    };
+  } catch (err) {
+    console.warn('[TikTok] tikwm info failed:', err.message);
+  }
 
+  // ── Last resort: basic info ───────────────────────────────────────────────
   return {
-    title     : ttTitle,
-    uploader  : info.uploader || info.creator || '',
-    duration  : formatDuration(info.duration  || 0),
-    thumbnail : info.thumbnail || '',
+    title     : 'TikTok Video',
+    uploader  : '',
+    duration  : 'Unknown',
+    thumbnail : '',
     platform  : 'TikTok',
     format    : 'MP4',
-    directUrl,
-    filesize  : getBestFilesize(info),
+    directUrl : null,
+    filesize  : null,
     _rawUrl   : videoUrl,
   };
 }
