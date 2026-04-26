@@ -131,7 +131,28 @@ function checkTool(cmd, args, cb) {
   });
 }
 
-checkTool('yt-dlp', ['--version'], (ver) => {
+// yt-dlp multiple possible paths check করো
+const os = require('os');
+const YTDLP_PATHS = [
+  'yt-dlp',
+  path.join(os.homedir(), '.local', 'bin', 'yt-dlp'),
+  '/usr/local/bin/yt-dlp',
+  '/usr/bin/yt-dlp',
+];
+
+function checkYtDlp(paths, cb) {
+  if (!paths.length) return cb(null);
+  const [first, ...rest] = paths;
+  execFile(first, ['--version'], { timeout: 10000 }, (err, stdout) => {
+    if (!err && stdout.trim()) {
+      cb(stdout.trim().split('\n')[0]);
+    } else {
+      checkYtDlp(rest, cb);
+    }
+  });
+}
+
+checkYtDlp(YTDLP_PATHS, (ver) => {
   if (ver) {
     app.locals.metrics.ytdlpVersion = ver;
     app.locals.metrics.ytdlpStatus  = 'found';
